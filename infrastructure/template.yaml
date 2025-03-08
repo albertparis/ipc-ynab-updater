@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: IPC to YNAB Lambda function
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name (dev, prod)
+  EmailNotification:
+    Type: String
+    Description: Email address for CloudWatch alarm notifications
+    Default: ""
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.11
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        ENVIRONMENT: !Ref Environment
+        NOTIFICATION_TOPIC_ARN: !Ref NotificationTopic
+
+Resources:
+  IpcYnabFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ..
+      Handler: src.lambda_function.lambda_handler
+      Description: Updates YNAB target based on IPC monthly rate
+      MemorySize: 128
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource:
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ynab/*"
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource:
+                - !Ref NotificationTopic
+      Events:
+        MonthlySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 0 20 * ? *)  # Run at midnight on the 20th of each month
+            Name: MonthlyIPCRateUpdate
+            Description: Updates YNAB target with latest IPC rate
+            Enabled: true
+
+  # CloudWatch Alarms
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-lambda-errors-${AWS::Region}-${AWS::AccountId}"
+      AlarmDescription: "Alarm when Lambda function encounters errors"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IpcYnabFunction
+      Statistic: Sum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-lambda-duration-${AWS::Region}-${AWS::AccountId}"
+      AlarmDescription: "Alarm when Lambda function takes too long to execute"
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IpcYnabFunction
+      Statistic: Maximum
+      Period: 300  # 5 minutes
+      EvaluationPeriods: 1
+      Threshold: 25000  # 25 seconds (warning before 30s timeout)
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # SNS Topic for notifications
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: !Sub "${AWS::StackName}-notifications-${AWS::Region}"
+      TopicName: !Sub "${AWS::StackName}-notifications-${AWS::Region}"
+
+  # Email subscription
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref EmailNotification
+
+  # Add SNS topic to alarms
+  LambdaErrorsAlarmAction:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-lambda-errors-action-${AWS::Region}-${AWS::AccountId}"
+      AlarmDescription: "Alarm action for Lambda errors"
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IpcYnabFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopic
+      OKActions:
+        - !Ref NotificationTopic
+
+  LambdaDurationAlarmAction:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-lambda-duration-action-${AWS::Region}-${AWS::AccountId}"
+      AlarmDescription: "Alarm action for Lambda duration"
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref IpcYnabFunction
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 25000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref NotificationTopic
+      OKActions:
+        - !Ref NotificationTopic
+
+Conditions:
+  HasEmailNotification: !Not [!Equals [!Ref EmailNotification, ""]]
+
+Outputs:
+  IpcYnabFunction:
+    Description: IPC to YNAB Lambda Function ARN
+    Value: !GetAtt IpcYnabFunction.Arn
+  NotificationTopic:
+    Description: SNS Topic ARN for notifications
+    Value: !Ref NotificationTopic
+    Condition: HasEmailNotification

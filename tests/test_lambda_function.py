@@ -42,13 +42,35 @@ def mock_sns():
 
 def test_get_ipc_rate():
     """Test getting IPC rate from INE."""
-    with patch('requests.get') as mock_get:
-        mock_get.return_value.json.return_value = {
-            "Data": [{"Valor": "0.2", "Fecha": "2025-01-01T00:00:00"}]
-        }
+    with patch('src.lambda_function.get_update_mode') as mock_mode, \
+         patch('src.lambda_function.get_monthly_ipc_rate') as mock_monthly, \
+         patch('src.lambda_function.get_yearly_ipc_rate') as mock_yearly:
+        
+        # Test monthly mode
+        mock_mode.return_value = UpdateMode.MONTHLY
+        mock_monthly.return_value = {"rate": 0.2, "date": "2025-01", "mode": "monthly"}
+        
         result = get_ipc_rate()
         assert result["rate"] == 0.2
         assert result["date"] == "2025-01"
+        assert result["mode"] == "monthly"
+        mock_monthly.assert_called_once()
+        mock_yearly.assert_not_called()
+        
+        # Reset mocks
+        mock_monthly.reset_mock()
+        mock_yearly.reset_mock()
+        
+        # Test yearly mode
+        mock_mode.return_value = UpdateMode.YEARLY
+        mock_yearly.return_value = {"rate": 3.5, "date": "2024", "mode": "yearly"}
+        
+        result = get_ipc_rate()
+        assert result["rate"] == 3.5
+        assert result["date"] == "2024"
+        assert result["mode"] == "yearly"
+        mock_yearly.assert_called_once()
+        mock_monthly.assert_not_called()
 
 def test_get_category_ids():
     """Test getting category IDs from SSM."""
@@ -86,7 +108,9 @@ def test_get_category_data():
 def test_format_ipc_message():
     """Test formatting IPC message."""
     result = format_ipc_message(1004000, 1006000, 0.2, '2025-01', 'monthly')
-    assert result == '2025-01 Monthly IPC: 0.20%: 1004.00€ -> 1006.00€'
+    assert "Monthly IPC update" in result
+    assert "1004.00€ → 1006.00€" in result
+    assert "0.2% month-over-month for 2025-01" in result
 
 def test_update_category():
     """Test updating a single category."""
@@ -158,7 +182,7 @@ def test_update_category_skip():
                 'category': {
                     'goal_target': 100400,
                     'name': 'Test Category',
-                    'note': '2025-01 IPC: 0.2%: Previous update'
+                    'note': 'Monthly IPC update: 100.00€ → 100.40€ (0.4% month-over-month for 2025-01)'
                 }
             }
         }
@@ -167,7 +191,7 @@ def test_update_category_skip():
             'budget_id',
             'category_id',
             'token',
-            {'date': '2025-01', 'rate': 0.2}
+            {'date': '2025-01', 'rate': 0.2, 'mode': 'monthly'}
         )
         
         assert result.status == 'skipped'
@@ -221,11 +245,11 @@ def test_update_ynab_targets_all_skipped():
         
         # Mock YNAB API responses
         mock_get.return_value.json.side_effect = [
-            {'data': {'category': {'goal_target': 100400, 'name': 'Category 1', 'note': '2025-01 IPC: 0.2%: Previous update'}}},
-            {'data': {'category': {'goal_target': 200000, 'name': 'Category 2', 'note': '2025-01 IPC: 0.2%: Previous update'}}}
+            {'data': {'category': {'goal_target': 100400, 'name': 'Category 1', 'note': 'Monthly IPC update: 100.00€ → 100.40€ (0.4% month-over-month for 2025-01)'}}},
+            {'data': {'category': {'goal_target': 200000, 'name': 'Category 2', 'note': 'Monthly IPC update: 198.00€ → 200.00€ (1.0% month-over-month for 2025-01)'}}}
         ]
         
-        result = update_ynab_targets({'date': '2025-01', 'rate': 0.2})
+        result = update_ynab_targets({'date': '2025-01', 'rate': 0.2, 'mode': 'monthly'})
         
         assert len(result['results']) == 2
         assert all(r['status'] == 'skipped' for r in result['results'])
@@ -372,12 +396,12 @@ def test_get_yearly_ipc_rate_insufficient_data():
 def test_format_ipc_message_monthly():
     """Test formatting monthly IPC message."""
     result = format_ipc_message(1004000, 1006000, 0.2, '2025-01', 'monthly')
-    assert result == '2025-01 Monthly IPC: 0.20%: 1004.00€ -> 1006.00€'
+    assert result == "Monthly IPC update: 1004.00€ → 1006.00€ (0.2% month-over-month for 2025-01)"
 
 def test_format_ipc_message_yearly():
     """Test formatting yearly IPC message."""
     result = format_ipc_message(1004000, 1024000, 2.0, '2025', 'yearly')
-    assert result == '2025 Annual IPC: 2.00%: 1004.00€ -> 1024.00€'
+    assert result == "Annual IPC update: 1004.00€ → 1024.00€ (2.0% year-over-year for 2025)"
 
 def test_lambda_handler_yearly_wrong_month():
     """Test yearly update attempted in wrong month."""
@@ -440,3 +464,33 @@ def test_lambda_handler_yearly_correct_month():
         assert body['results'][0]['status'] == 'updated'
         assert body['update_mode'] == 'yearly'
         assert body['current_month'] == 1
+
+def test_get_monthly_ipc_rate():
+    """Test getting monthly IPC rate with Definitivo status."""
+    with patch('requests.get') as mock_get:
+        mock_get.return_value.json.return_value = {
+            "Data": [
+                {"Valor": "0.4", "Fecha": "2025-02-01T00:00:00", "T3_TipoDato": "Avance"},  # Most recent but Avance
+                {"Valor": "0.2", "Fecha": "2025-01-01T00:00:00", "T3_TipoDato": "Definitivo"},  # Should use this one
+                {"Valor": "0.5", "Fecha": "2024-12-01T00:00:00", "T3_TipoDato": "Definitivo"}  # Older
+            ]
+        }
+        
+        result = get_monthly_ipc_rate()
+        assert result["rate"] == 0.2  # Should use the most recent Definitivo value
+        assert result["date"] == "2025-01"  # Should use the date from the Definitivo value
+        assert result["mode"] == "monthly"
+
+def test_get_monthly_ipc_rate_no_definitivo():
+    """Test error when no Definitivo data is available."""
+    with patch('requests.get') as mock_get:
+        mock_get.return_value.json.return_value = {
+            "Data": [
+                {"Valor": "0.4", "Fecha": "2025-02-01T00:00:00", "T3_TipoDato": "Avance"},
+                {"Valor": "0.3", "Fecha": "2025-01-01T00:00:00", "T3_TipoDato": "Avance"},
+                {"Valor": "0.5", "Fecha": "2024-12-01T00:00:00", "T3_TipoDato": "Avance"}
+            ]
+        }
+        
+        with pytest.raises(ValueError, match="Could not find any IPC data with 'Definitivo' status"):
+            get_monthly_ipc_rate()

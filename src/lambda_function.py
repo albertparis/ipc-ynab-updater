@@ -63,6 +63,8 @@ def get_update_mode() -> UpdateMode:
 
 def get_ipc_rate() -> IpcData:
     """Get the IPC rate based on configured update mode."""
+    # For monthly updates: Uses month-over-month variation rate (IPC251855)
+    # For yearly updates: Uses year-over-year variation rate from December (IPC251858)
     update_mode = get_update_mode()
     
     if update_mode == UpdateMode.MONTHLY:
@@ -71,15 +73,26 @@ def get_ipc_rate() -> IpcData:
         return get_yearly_ipc_rate()
 
 def get_monthly_ipc_rate() -> IpcData:
-    """Get the latest monthly IPC rate from INE."""
-    url = "https://servicios.ine.es/wstempus/js/ES/DATOS_SERIE/IPC251858?nult=1&tip=A"
+    """Get the latest monthly IPC rate from INE (month-over-month variation)."""
+    # Get the last 3 months to ensure we have at least one with "Definitivo" status
+    url = "https://servicios.ine.es/wstempus/js/ES/DATOS_SERIE/IPC251855?nult=3&tip=A"
     response = requests.get(url, verify=True)
     response.raise_for_status()
     data = response.json()
-    latest_data = data["Data"][0]
+    
+    # Find the most recent data point with "Definitivo" status
+    definitivo_data = None
+    for point in data["Data"]:
+        if point["T3_TipoDato"] == "Definitivo":
+            definitivo_data = point
+            break
+    
+    if not definitivo_data:
+        raise ValueError("Could not find any IPC data with 'Definitivo' status")
+    
     return {
-        "rate": float(latest_data["Valor"]),
-        "date": datetime.strptime(latest_data["Fecha"].split("T")[0], "%Y-%m-%d").strftime("%Y-%m"),
+        "rate": float(definitivo_data["Valor"]),
+        "date": datetime.strptime(definitivo_data["Fecha"].split("T")[0], "%Y-%m-%d").strftime("%Y-%m"),
         "mode": UpdateMode.MONTHLY.value
     }
 
@@ -132,14 +145,16 @@ def format_ipc_message(current_target: int, new_target: int, ipc_rate: float, pe
     current_euros = current_target / 1000
     new_euros = new_target / 1000
     mode_prefix = "Annual" if mode == UpdateMode.YEARLY.value else "Monthly"
-    return f"{period} {mode_prefix} IPC: {ipc_rate:.2f}%: {current_euros:.2f}€ -> {new_euros:.2f}€"
+    rate_type = "year-over-year" if mode == UpdateMode.YEARLY.value else "month-over-month"
+    return f"{mode_prefix} IPC update: {current_euros:.2f}€ → {new_euros:.2f}€ ({ipc_rate:.1f}% {rate_type} for {period})"
 
 def is_update_needed(current_notes: str, period: str) -> bool:
     """Check if we need to update for this period."""
     if not current_notes:
         return True
-    latest_period = current_notes.split('\n')[0].split()[0] if current_notes.split('\n') else ''
-    return latest_period != period
+    
+    # Check if the note contains the period
+    return period not in current_notes.split('\n')[0]
 
 def send_notification(subject: str, message: str) -> None:
     """Send SNS notification."""

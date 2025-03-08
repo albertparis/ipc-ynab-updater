@@ -85,23 +85,25 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
 1. **Update Mode**
    The function supports two update modes:
    - **Monthly Mode** (default):
-     - Uses the latest monthly IPC rate
+     - Uses the latest monthly month-over-month IPC rate
      - Updates category targets monthly
-     - Note format: "2024-03 Monthly IPC: 0.3%: 1000.00€ -> 1003.00€"
+     - Note format: "Monthly IPC update: 1000.00€ → 1003.00€ (0.3% month-over-month for 2024-03)"
    
    - **Yearly Mode**:
      - Compares current value with last December's value
      - Still runs monthly but uses year-over-year rate
-     - Note format: "2024 Annual IPC: 3.5%: 1000.00€ -> 1035.00€"
+     - Note format: "Annual IPC update: 1000.00€ → 1035.00€ (3.5% year-over-year for 2024)"
 
 2. **IPC Rate Fetching**
    - Monthly Mode:
-     - Gets the latest monthly rate from INE's API
+     - Gets the latest monthly month-over-month rate from INE's API (IPC251855)
+     - Only uses data with "Definitivo" status, never "Avance"
      - Typically published around the 14th of each month
    
    - Yearly Mode:
-     - Gets the last 13 months of data to ensure December's value is available
-     - Calculates year-over-year change: ((current - lastDecember) / lastDecember) * 100
+     - Gets the last 3 months of data to ensure December's value is available
+     - Uses December's year-over-year rate from INE's API (IPC251858)
+     - Calculates new target based on the December rate
 
 3. **Category Updates**
    - Retrieves the list of category IDs from SSM Parameter Store

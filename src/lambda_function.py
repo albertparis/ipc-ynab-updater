@@ -6,10 +6,16 @@ import requests
 import boto3
 from dataclasses import dataclass
 from functools import lru_cache
+from enum import Enum
+
+class UpdateMode(Enum):
+    MONTHLY = "monthly"
+    YEARLY = "yearly"
 
 class IpcData(TypedDict):
     rate: float
     date: str
+    mode: str  # "monthly" or "yearly"
 
 class CategoryData(TypedDict):
     goal_target: float
@@ -43,8 +49,29 @@ def get_category_ids() -> List[str]:
     category_ids_str = get_ssm_parameter('/ynab/category_ids')
     return [id.strip() for id in category_ids_str.split(',')]
 
+@lru_cache(maxsize=1)
+def get_update_mode() -> UpdateMode:
+    """Get update mode from SSM parameter, defaults to monthly if not set."""
+    try:
+        mode = get_ssm_parameter('/ynab/update_mode')
+        mode = mode.lower()
+        if mode == UpdateMode.YEARLY.value:
+            return UpdateMode.YEARLY
+        return UpdateMode.MONTHLY
+    except:
+        return UpdateMode.MONTHLY
+
 def get_ipc_rate() -> IpcData:
-    """Get the latest IPC monthly rate from INE."""
+    """Get the IPC rate based on configured update mode."""
+    update_mode = get_update_mode()
+    
+    if update_mode == UpdateMode.MONTHLY:
+        return get_monthly_ipc_rate()
+    else:
+        return get_yearly_ipc_rate()
+
+def get_monthly_ipc_rate() -> IpcData:
+    """Get the latest monthly IPC rate from INE."""
     url = "https://servicios.ine.es/wstempus/js/ES/DATOS_SERIE/IPC251858?nult=1&tip=A"
     response = requests.get(url, verify=True)
     response.raise_for_status()
@@ -52,7 +79,40 @@ def get_ipc_rate() -> IpcData:
     latest_data = data["Data"][0]
     return {
         "rate": float(latest_data["Valor"]),
-        "date": datetime.strptime(latest_data["Fecha"].split("T")[0], "%Y-%m-%d").strftime("%Y-%m")
+        "date": datetime.strptime(latest_data["Fecha"].split("T")[0], "%Y-%m-%d").strftime("%Y-%m"),
+        "mode": UpdateMode.MONTHLY.value
+    }
+
+def get_yearly_ipc_rate() -> IpcData:
+    """Get the year-over-year IPC rate from INE using December values."""
+    # Get last 13 months to ensure we have last December's data
+    url = "https://servicios.ine.es/wstempus/js/ES/DATOS_SERIE/IPC251858?nult=13&tip=A"
+    response = requests.get(url, verify=True)
+    response.raise_for_status()
+    data = response.json()
+    
+    # Find the most recent December data point
+    current_date = datetime.strptime(data["Data"][0]["Fecha"].split("T")[0], "%Y-%m-%d")
+    current_value = float(data["Data"][0]["Valor"])
+    
+    # Find last December's value
+    last_december = None
+    for point in data["Data"]:
+        date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
+        if date.month == 12 and date.year < current_date.year:
+            last_december = float(point["Valor"])
+            break
+    
+    if last_december is None:
+        raise ValueError("Could not find last December's IPC value")
+    
+    # Calculate year-over-year change
+    annual_rate = ((current_value - last_december) / last_december) * 100
+    
+    return {
+        "rate": annual_rate,
+        "date": current_date.strftime("%Y"),  # Only year for annual updates
+        "mode": UpdateMode.YEARLY.value
     }
 
 def get_category_data(budget_id: str, category_id: str, ynab_token: str) -> CategoryData:
@@ -67,12 +127,13 @@ def get_category_data(budget_id: str, category_id: str, ynab_token: str) -> Cate
         "note": category.get('note', '')
     }
 
-def format_ipc_message(current_target: int, new_target: int, ipc_rate: float, period: str) -> str:
+def format_ipc_message(current_target: int, new_target: int, ipc_rate: float, period: str, mode: str) -> str:
     """Format IPC message for YNAB notes."""
     # Convert from millicents to euros and display with two decimal places
     current_euros = current_target / 1000
     new_euros = new_target / 1000
-    return f"{period} IPC: {ipc_rate}%: {current_euros:.2f}€ -> {new_euros:.2f}€"
+    mode_prefix = "Annual" if mode == UpdateMode.YEARLY.value else "Monthly"
+    return f"{period} {mode_prefix} IPC: {ipc_rate:.2f}%: {current_euros:.2f}€ -> {new_euros:.2f}€"
 
 def is_update_needed(current_notes: str, period: str) -> bool:
     """Check if we need to update for this period."""
@@ -105,13 +166,18 @@ def update_category(budget_id: str, category_id: str, ynab_token: str, ipc_data:
         
         # Calculate new target (all in millicents)
         current_millicents = int(category_data["goal_target"])
-        # First convert to euros, apply rate, then round to nearest euro (1000 millicents)
         current_euros = current_millicents / 1000
         new_euros = current_euros * (1 + ipc_data["rate"] / 100)
         new_millicents = int(round(new_euros * 1000 / 1000) * 1000)  # Round to nearest euro
         
         # Format message and update category
-        ipc_message = format_ipc_message(current_millicents, new_millicents, ipc_data["rate"], ipc_data["date"])
+        ipc_message = format_ipc_message(
+            current_millicents,
+            new_millicents,
+            ipc_data["rate"],
+            ipc_data["date"],
+            ipc_data["mode"]
+        )
         new_notes = f"{ipc_message}\n{category_data['note']}"
         
         url = f"https://api.ynab.com/v1/budgets/{budget_id}/categories/{category_id}"
@@ -186,6 +252,21 @@ def update_ynab_targets(ipc_data: IpcData) -> Dict[str, Any]:
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
     try:
+        # Check if we should run based on update mode
+        update_mode = get_update_mode()
+        current_date = datetime.now()
+        
+        if update_mode == UpdateMode.YEARLY and current_date.month != 1:
+            print(f"Skipping yearly update in month {current_date.month}")
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Skipped: Yearly updates only run in January',
+                    'update_mode': update_mode.value,
+                    'current_month': current_date.month
+                })
+            }
+        
         # Get IPC rate
         try:
             ipc_data = get_ipc_rate()
@@ -207,7 +288,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                     'monthly_rate': ipc_data["rate"],
                     'period': ipc_data["date"],
                     'timestamp': datetime.now().isoformat(),
-                    'results': ynab_response["results"]
+                    'results': ynab_response["results"],
+                    'update_mode': update_mode.value,
+                    'current_month': current_date.month
                 })
             }
         except Exception as e:

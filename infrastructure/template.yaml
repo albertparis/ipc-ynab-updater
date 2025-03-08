@@ -1,6 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: IPC to YNAB Lambda function
+Description: >-
+  IPC to YNAB Lambda function that updates YNAB category targets based on IPC rate.
+  Supports both monthly and yearly update modes through /ynab/update_mode parameter (monthly/yearly).
 
 Parameters:
   Environment:
@@ -11,6 +13,17 @@ Parameters:
     Type: String
     Description: Email address for CloudWatch alarm notifications
     Default: ""
+  UpdateMode:
+    Type: String
+    Default: monthly
+    AllowedValues:
+      - monthly
+      - yearly
+    Description: Update mode for IPC rate (monthly/yearly)
+
+Conditions:
+  IsMonthlyMode: !Equals [!Ref UpdateMode, "monthly"]
+  HasEmailNotification: !Not [!Equals [!Ref EmailNotification, ""]]
 
 Globals:
   Function:
@@ -29,7 +42,7 @@ Resources:
     Properties:
       CodeUri: ..
       Handler: src.lambda_function.lambda_handler
-      Description: Updates YNAB target based on IPC monthly rate
+      Description: Updates YNAB target based on IPC rate
       MemorySize: 128
       Policies:
         - Version: "2012-10-17"
@@ -46,12 +59,15 @@ Resources:
               Resource:
                 - !Ref NotificationTopic
       Events:
-        MonthlySchedule:
+        Schedule:
           Type: Schedule
           Properties:
-            Schedule: cron(0 0 20 * ? *)  # Run at midnight on the 20th of each month
-            Name: MonthlyIPCRateUpdate
-            Description: Updates YNAB target with latest IPC rate
+            Schedule: !If 
+              - IsMonthlyMode
+              - cron(0 0 20 * ? *)  # Run at midnight on the 20th of each month
+              - cron(0 0 20 1 ? *)  # Run at midnight on January 20th
+            Name: !Sub "${AWS::StackName}-${UpdateMode}-update"
+            Description: !Sub "Updates YNAB target with ${UpdateMode} IPC rate"
             Enabled: true
 
   # CloudWatch Alarms
@@ -146,9 +162,6 @@ Resources:
         - !Ref NotificationTopic
       OKActions:
         - !Ref NotificationTopic
-
-Conditions:
-  HasEmailNotification: !Not [!Equals [!Ref EmailNotification, ""]]
 
 Outputs:
   IpcYnabFunction:

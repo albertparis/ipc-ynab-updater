@@ -11,7 +11,7 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
 - Maintains a history of updates in category notes
 - Sends detailed email notifications for successful updates and skips
 - Runs automatically on the 20th of each month
-- Secure credential management using AWS Systems Manager Parameter Store
+- Secure credential management using AWS Systems Manager Parameter Store with direct fetching (no caching)
 - Comprehensive test coverage
 - CI/CD pipeline with GitHub Actions
 
@@ -94,7 +94,12 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
      - Still runs monthly but uses year-over-year rate
      - Note format: "Annual IPC update: 1000.00€ → 1035.00€ (3.5% year-over-year for 2024)"
 
-2. **IPC Rate Fetching**
+2. **Parameter Fetching**
+   - Retrieves configuration from AWS Systems Manager Parameter Store
+   - Always fetches fresh values directly (no caching)
+   - Logs parameter fetches for debugging purposes
+
+3. **IPC Rate Fetching**
    - Monthly Mode:
      - Gets the latest monthly month-over-month rate from INE's API (IPC251855)
      - Only uses data with "Definitivo" status, never "Avance"
@@ -105,7 +110,7 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
      - Uses December's year-over-year rate from INE's API (IPC251858)
      - Calculates new target based on the December rate
 
-3. **Category Updates**
+4. **Category Updates**
    - Retrieves the list of category IDs from SSM Parameter Store
    - For each category:
      - Gets current target amount and notes
@@ -113,12 +118,12 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
      - Calculates new target based on IPC rate
      - Updates the target and prepends update history to notes
 
-4. **Amount Handling**
+5. **Amount Handling**
    - YNAB stores amounts in millicents (1/1000 of a euro)
    - The function rounds new amounts to the nearest euro (1000 millicents)
    - Messages display amounts with two decimal places (e.g., "1004.00€ -> 1006.00€")
 
-5. **Notifications**
+6. **Notifications**
    Sends an email with:
    - Period and IPC rate
    - List of updated categories with old and new amounts
@@ -155,6 +160,8 @@ pytest tests/test_lambda_function.py -k test_update_ynab_targets
 ## Monitoring
 
 - CloudWatch Logs: View function logs and execution details
+  - Parameter fetching logs show when SSM parameters are retrieved
+  - IPC data fetching logs show the data points considered and selected
 - CloudWatch Metrics: Monitor function performance and errors
 - SNS Notifications: Receive email updates about function execution
 - GitHub Actions: View CI/CD pipeline status and test results

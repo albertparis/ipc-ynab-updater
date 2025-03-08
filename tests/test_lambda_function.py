@@ -264,8 +264,14 @@ def test_update_ynab_targets_all_skipped():
 
 def test_lambda_handler_success():
     """Test successful lambda handler execution."""
-    with patch('src.lambda_function.get_ipc_rate') as mock_ipc, \
+    with patch('boto3.client') as mock_boto3, \
+         patch('src.lambda_function.get_ipc_rate') as mock_ipc, \
          patch('src.lambda_function.update_ynab_targets') as mock_update:
+        
+        # Mock boto3 client
+        mock_ssm = MagicMock()
+        mock_boto3.return_value = mock_ssm
+        mock_ssm.get_parameter.return_value = {'Parameter': {'Value': 'test_value'}}
         
         mock_ipc.return_value = {'rate': 0.2, 'date': '2025-01'}
         mock_update.return_value = {
@@ -283,13 +289,21 @@ def test_lambda_handler_success():
         
         assert result['statusCode'] == 200
         body = json.loads(result['body'])
-        assert 'results' in body
+        assert body['monthly_rate'] == 0.2
+        assert body['period'] == '2025-01'
         assert len(body['results']) == 1
         assert body['results'][0]['status'] == 'updated'
 
 def test_lambda_handler_ipc_error():
     """Test lambda handler with IPC rate error."""
-    with patch('src.lambda_function.get_ipc_rate') as mock_ipc:
+    with patch('boto3.client') as mock_boto3, \
+         patch('src.lambda_function.get_ipc_rate') as mock_ipc:
+        
+        # Mock boto3 client
+        mock_ssm = MagicMock()
+        mock_boto3.return_value = mock_ssm
+        mock_ssm.get_parameter.return_value = {'Parameter': {'Value': 'test_value'}}
+        
         mock_ipc.side_effect = Exception('IPC API error')
         
         result = lambda_handler({}, None)
@@ -299,8 +313,14 @@ def test_lambda_handler_ipc_error():
 
 def test_lambda_handler_update_error():
     """Test lambda handler with YNAB update error."""
-    with patch('src.lambda_function.get_ipc_rate') as mock_ipc, \
+    with patch('boto3.client') as mock_boto3, \
+         patch('src.lambda_function.get_ipc_rate') as mock_ipc, \
          patch('src.lambda_function.update_ynab_targets') as mock_update:
+        
+        # Mock boto3 client
+        mock_ssm = MagicMock()
+        mock_boto3.return_value = mock_ssm
+        mock_ssm.get_parameter.return_value = {'Parameter': {'Value': 'test_value'}}
         
         mock_ipc.return_value = {'rate': 0.2, 'date': '2025-01'}
         mock_update.side_effect = Exception('YNAB API error')
@@ -327,7 +347,6 @@ def test_send_notification():
 
 def test_get_update_mode_monthly():
     """Test getting monthly update mode from SSM."""
-    get_update_mode.cache_clear()  # Clear the cache before test
     with patch('src.lambda_function.get_ssm_parameter') as mock_ssm:
         mock_ssm.return_value = UpdateMode.MONTHLY.value
         mode = get_update_mode()
@@ -336,7 +355,6 @@ def test_get_update_mode_monthly():
 
 def test_get_update_mode_yearly():
     """Test getting yearly update mode from SSM."""
-    get_update_mode.cache_clear()  # Clear the cache before test
     with patch('src.lambda_function.get_ssm_parameter') as mock_ssm:
         mock_ssm.return_value = UpdateMode.YEARLY.value
         mode = get_update_mode()
@@ -345,11 +363,11 @@ def test_get_update_mode_yearly():
 
 def test_get_update_mode_default():
     """Test default update mode when parameter is missing."""
-    get_update_mode.cache_clear()  # Clear the cache before test
     with patch('src.lambda_function.get_ssm_parameter') as mock_ssm:
         mock_ssm.side_effect = Exception('Parameter not found')
         mode = get_update_mode()
         assert mode == UpdateMode.MONTHLY
+        mock_ssm.assert_called_once_with('/ynab/update_mode')
 
 def test_get_yearly_ipc_rate():
     """Test getting yearly IPC rate using December's value."""
@@ -423,42 +441,54 @@ def test_format_ipc_message_yearly():
 
 def test_lambda_handler_yearly_wrong_month():
     """Test yearly update attempted in wrong month."""
-    with patch('src.lambda_function.get_update_mode') as mock_mode, \
+    with patch('boto3.client') as mock_boto3, \
+         patch('src.lambda_function.get_update_mode') as mock_mode, \
          patch('src.lambda_function.datetime') as mock_datetime:
         
+        # Mock boto3 client
+        mock_ssm = MagicMock()
+        mock_boto3.return_value = mock_ssm
+        mock_ssm.get_parameter.return_value = {'Parameter': {'Value': 'test_value'}}
+
         # Mock update mode as yearly
         mock_mode.return_value = UpdateMode.YEARLY
-        
+
         # Mock current date as March
         mock_date = MagicMock()
         mock_date.month = 3
         mock_date.isoformat.return_value = '2024-03-20'
         mock_datetime.now.return_value = mock_date
-        
+
         result = lambda_handler({}, None)
-        
+
         assert result['statusCode'] == 200
         body = json.loads(result['body'])
-        assert 'Skipped: Yearly updates only run in January' in body['message']
+        assert body['message'] == 'Skipped: Yearly updates only run in January'
         assert body['update_mode'] == 'yearly'
         assert body['current_month'] == 3
 
 def test_lambda_handler_yearly_correct_month():
     """Test yearly update in January."""
-    with patch('src.lambda_function.get_update_mode') as mock_mode, \
+    with patch('boto3.client') as mock_boto3, \
+         patch('src.lambda_function.get_update_mode') as mock_mode, \
          patch('src.lambda_function.datetime') as mock_datetime, \
          patch('src.lambda_function.get_ipc_rate') as mock_ipc, \
          patch('src.lambda_function.update_ynab_targets') as mock_update:
         
+        # Mock boto3 client
+        mock_ssm = MagicMock()
+        mock_boto3.return_value = mock_ssm
+        mock_ssm.get_parameter.return_value = {'Parameter': {'Value': 'test_value'}}
+
         # Mock update mode as yearly
         mock_mode.return_value = UpdateMode.YEARLY
-        
+
         # Mock current date as January
         mock_date = MagicMock()
         mock_date.month = 1
         mock_date.isoformat.return_value = '2024-01-20'
         mock_datetime.now.return_value = mock_date
-        
+
         # Mock IPC rate and update response
         mock_ipc.return_value = {'rate': 3.5, 'date': '2024', 'mode': 'yearly'}
         mock_update.return_value = {

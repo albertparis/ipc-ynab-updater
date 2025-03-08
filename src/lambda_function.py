@@ -5,7 +5,6 @@ from typing import Dict, Any, List, Tuple, TypedDict, Optional
 import requests
 import boto3
 from dataclasses import dataclass
-from functools import lru_cache
 from enum import Enum
 
 class UpdateMode(Enum):
@@ -34,9 +33,9 @@ class CategoryUpdate:
     error: Optional[str] = None
     ynab_response: Optional[Dict[str, Any]] = None
 
-@lru_cache(maxsize=1)
 def get_ssm_parameter(param_name: str) -> str:
-    """Get parameter from AWS Systems Manager Parameter Store with caching."""
+    """Get parameter from AWS Systems Manager Parameter Store."""
+    print(f"Fetching parameter {param_name} from SSM")
     ssm = boto3.client('ssm')
     response = ssm.get_parameter(
         Name=param_name,
@@ -49,7 +48,6 @@ def get_category_ids() -> List[str]:
     category_ids_str = get_ssm_parameter('/ynab/category_ids')
     return [id.strip() for id in category_ids_str.split(',')]
 
-@lru_cache(maxsize=1)
 def get_update_mode() -> UpdateMode:
     """Get update mode from SSM parameter, defaults to monthly if not set."""
     try:
@@ -319,8 +317,14 @@ def update_ynab_targets(ipc_data: IpcData) -> Dict[str, Any]:
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Main Lambda handler function."""
     try:
-        # Check if we should run based on update mode
+        # Use force_refresh to get fresh parameter values
         update_mode = get_update_mode()
+        
+        # Get YNAB token and budget ID from SSM Parameter Store
+        ynab_token = get_ssm_parameter('/ynab/token')
+        budget_id = get_ssm_parameter('/ynab/budget_id')
+        
+        # Check if we should run based on update mode
         current_date = datetime.now()
         
         print(f"Current date: {current_date.strftime('%Y-%m-%d')}, Update mode: {update_mode.value}")

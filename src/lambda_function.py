@@ -80,21 +80,48 @@ def get_monthly_ipc_rate() -> IpcData:
     response.raise_for_status()
     data = response.json()
     
-    # Find the most recent data point with "Definitivo" status
+    print(f"Monthly IPC data received: {json.dumps(data['Data'])}")
+    
+    # Find the most recent data point with "Definitivo" status that is not in the future
+    current_date = datetime.now()
+    print(f"Current date for comparison: {current_date.strftime('%Y-%m-%d %H:%M:%S')}")
     definitivo_data = None
-    for point in data["Data"]:
+    
+    # Sort data points by date in descending order (most recent first)
+    sorted_data = sorted(
+        data["Data"],
+        key=lambda x: datetime.strptime(x["Fecha"].split("T")[0], "%Y-%m-%d"),
+        reverse=True
+    )
+    
+    print(f"Sorted data points by date (descending):")
+    for i, point in enumerate(sorted_data):
+        point_date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
+        print(f"  {i+1}. {point_date.strftime('%Y-%m-%d')} - {point['T3_TipoDato']} - {point['Valor']}")
+    
+    for point in sorted_data:
+        point_date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
+        # Skip future dates
+        if point_date > current_date:
+            print(f"Skipping future date: {point_date.strftime('%Y-%m-%d')} (current date: {current_date.strftime('%Y-%m-%d')})")
+            continue
+            
         if point["T3_TipoDato"] == "Definitivo":
             definitivo_data = point
+            print(f"Selected monthly data point: {point_date.strftime('%Y-%m-%d')} with value {point['Valor']}")
             break
     
     if not definitivo_data:
-        raise ValueError("Could not find any IPC data with 'Definitivo' status")
+        raise ValueError("Could not find any IPC data with 'Definitivo' status for a non-future date")
     
-    return {
+    result = {
         "rate": float(definitivo_data["Valor"]),
         "date": datetime.strptime(definitivo_data["Fecha"].split("T")[0], "%Y-%m-%d").strftime("%Y-%m"),
         "mode": UpdateMode.MONTHLY.value
     }
+    
+    print(f"Returning IPC data: {json.dumps(result)}")
+    return result
 
 def get_yearly_ipc_rate() -> IpcData:
     """Get the year-over-year IPC rate from INE using December's value."""
@@ -104,28 +131,54 @@ def get_yearly_ipc_rate() -> IpcData:
     response.raise_for_status()
     data = response.json()
     
+    print(f"Yearly IPC data received: {json.dumps(data['Data'])}")
+    
     if len(data["Data"]) < 3:  # We request 3 months, so we should get 3 months
         raise ValueError("Could not get enough data points for yearly calculation")
     
-    # Find December data point
+    # Find the most recent December data point that is not in the future
+    current_date = datetime.now()
+    print(f"Current date for comparison: {current_date.strftime('%Y-%m-%d %H:%M:%S')}")
     december_point = None
-    for point in data["Data"]:
-        date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
-        if date.month == 12:
-            december_point = (date, float(point["Valor"]))
+    
+    # Sort data points by date in descending order (most recent first)
+    sorted_data = sorted(
+        data["Data"],
+        key=lambda x: datetime.strptime(x["Fecha"].split("T")[0], "%Y-%m-%d"),
+        reverse=True
+    )
+    
+    print(f"Sorted data points by date (descending):")
+    for i, point in enumerate(sorted_data):
+        point_date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
+        print(f"  {i+1}. {point_date.strftime('%Y-%m-%d')} - {point.get('T3_TipoDato', 'Unknown')} - {point['Valor']}")
+    
+    for point in sorted_data:
+        point_date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
+        # Skip future dates
+        if point_date > current_date:
+            print(f"Skipping future date: {point_date.strftime('%Y-%m-%d')} (current date: {current_date.strftime('%Y-%m-%d')})")
+            continue
+            
+        if point_date.month == 12 and point.get("T3_TipoDato", "") == "Definitivo":
+            december_point = (point_date, float(point["Valor"]))
+            print(f"Selected December data point: {point_date.strftime('%Y-%m-%d')} with value {point['Valor']}")
             break
     
     if not december_point:
-        raise ValueError("Could not find December's IPC value")
+        raise ValueError("Could not find December's IPC value with 'Definitivo' status for a non-future date")
     
     # Use December's value which is already year-over-year rate
     december_date, rate = december_point
     
-    return {
+    result = {
         "rate": rate,
         "date": december_date.strftime("%Y"),  # Use December's year
         "mode": UpdateMode.YEARLY.value
     }
+    
+    print(f"Returning IPC data: {json.dumps(result)}")
+    return result
 
 def get_category_data(budget_id: str, category_id: str, ynab_token: str) -> CategoryData:
     """Get category data from YNAB in a single API call."""
@@ -146,7 +199,7 @@ def format_ipc_message(current_target: int, new_target: int, ipc_rate: float, pe
     new_euros = new_target / 1000
     mode_prefix = "Annual" if mode == UpdateMode.YEARLY.value else "Monthly"
     rate_type = "year-over-year" if mode == UpdateMode.YEARLY.value else "month-over-month"
-    return f"{mode_prefix} IPC update: {current_euros:.2f}€ → {new_euros:.2f}€ ({ipc_rate:.1f}% {rate_type} for {period})"
+    return f"{period} {mode_prefix} IPC update: {current_euros:.2f}€ → {new_euros:.2f}€ ({ipc_rate:.1f}% {rate_type})"
 
 def is_update_needed(current_notes: str, period: str) -> bool:
     """Check if we need to update for this period."""
@@ -270,6 +323,8 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         update_mode = get_update_mode()
         current_date = datetime.now()
         
+        print(f"Current date: {current_date.strftime('%Y-%m-%d')}, Update mode: {update_mode.value}")
+        
         if update_mode == UpdateMode.YEARLY and current_date.month != 1:
             print(f"Skipping yearly update in month {current_date.month}")
             return {
@@ -284,6 +339,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         # Get IPC rate
         try:
             ipc_data = get_ipc_rate()
+            print(f"Using IPC data: {json.dumps(ipc_data)}")
         except Exception as e:
             print(f"Error getting IPC rate: {str(e)}")
             return {

@@ -108,9 +108,10 @@ def test_get_category_data():
 def test_format_ipc_message():
     """Test formatting IPC message."""
     result = format_ipc_message(1004000, 1006000, 0.2, '2025-01', 'monthly')
+    assert "2025-01" in result
     assert "Monthly IPC update" in result
     assert "1004.00€ → 1006.00€" in result
-    assert "0.2% month-over-month for 2025-01" in result
+    assert "0.2% month-over-month" in result
 
 def test_update_category():
     """Test updating a single category."""
@@ -352,33 +353,50 @@ def test_get_update_mode_default():
 
 def test_get_yearly_ipc_rate():
     """Test getting yearly IPC rate using December's value."""
-    with patch('requests.get') as mock_get:
+    with patch('requests.get') as mock_get, \
+         patch('src.lambda_function.datetime') as mock_datetime:
+        # Mock current date to be 2024-03-15
+        mock_current_date = datetime(2024, 3, 15)
+        mock_datetime.now.return_value = mock_current_date
+        
         # Mock response with December data
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "103.2", "Fecha": "2024-01-01T00:00:00"},  # January (not used)
-                {"Valor": "3.5", "Fecha": "2023-12-01T00:00:00"},    # December (used)
-                {"Valor": "102.0", "Fecha": "2023-11-01T00:00:00"}   # November (not used)
+                {"Valor": "0.2", "Fecha": "2025-01-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"},  # Future date, should be skipped
+                {"Valor": "3.5", "Fecha": "2023-12-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"},  # Past December with Definitivo, should use this
+                {"Valor": "3.2", "Fecha": "2023-11-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"}   # Past November, not December
             ]
         }
         
+        # Mock the strptime and strftime methods
+        mock_datetime.strptime.side_effect = lambda *args, **kw: datetime.strptime(*args, **kw)
+        mock_datetime.strftime = datetime.strftime
+        
         result = get_yearly_ipc_rate()
-        assert result["rate"] == 3.5  # Uses December's value directly
-        assert result["date"] == "2023"  # Uses December's year
+        assert result["rate"] == 3.5  # Uses the most recent non-future December value
+        assert result["date"] == "2023"  # Uses the year from the non-future December value
         assert result["mode"] == "yearly"
 
 def test_get_yearly_ipc_rate_no_december():
-    """Test error when December data is not available."""
-    with patch('requests.get') as mock_get:
+    """Test error when no December data with Definitivo status is available for non-future dates."""
+    with patch('requests.get') as mock_get, \
+         patch('src.lambda_function.datetime') as mock_datetime:
+        # Mock current date to be 2024-03-15
+        mock_current_date = datetime(2024, 3, 15)
+        mock_datetime.now.return_value = mock_current_date
+        
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "103.2", "Fecha": "2024-01-01T00:00:00"},  # January
-                {"Valor": "103.0", "Fecha": "2023-11-01T00:00:00"},  # November
-                {"Valor": "102.8", "Fecha": "2023-10-01T00:00:00"}   # October
+                {"Valor": "3.5", "Fecha": "2024-12-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"},  # Future December, should be skipped
+                {"Valor": "3.0", "Fecha": "2023-11-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"},  # Past November, not December
+                {"Valor": "2.8", "Fecha": "2023-10-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"}   # Past October, not December
             ]
         }
         
-        with pytest.raises(ValueError, match="Could not find December's IPC value"):
+        # Mock the strptime method
+        mock_datetime.strptime.side_effect = lambda *args, **kw: datetime.strptime(*args, **kw)
+        
+        with pytest.raises(ValueError, match="Could not find December's IPC value with 'Definitivo' status for a non-future date"):
             get_yearly_ipc_rate()
 
 def test_get_yearly_ipc_rate_insufficient_data():
@@ -386,7 +404,7 @@ def test_get_yearly_ipc_rate_insufficient_data():
     with patch('requests.get') as mock_get:
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "103.2", "Fecha": "2024-01-01T00:00:00"}  # Only one month
+                {"Valor": "3.2", "Fecha": "2024-01-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"}  # Only one month
             ]
         }
         
@@ -396,12 +414,12 @@ def test_get_yearly_ipc_rate_insufficient_data():
 def test_format_ipc_message_monthly():
     """Test formatting monthly IPC message."""
     result = format_ipc_message(1004000, 1006000, 0.2, '2025-01', 'monthly')
-    assert result == "Monthly IPC update: 1004.00€ → 1006.00€ (0.2% month-over-month for 2025-01)"
+    assert result == "2025-01 Monthly IPC update: 1004.00€ → 1006.00€ (0.2% month-over-month)"
 
 def test_format_ipc_message_yearly():
     """Test formatting yearly IPC message."""
     result = format_ipc_message(1004000, 1024000, 2.0, '2025', 'yearly')
-    assert result == "Annual IPC update: 1004.00€ → 1024.00€ (2.0% year-over-year for 2025)"
+    assert result == "2025 Annual IPC update: 1004.00€ → 1024.00€ (2.0% year-over-year)"
 
 def test_lambda_handler_yearly_wrong_month():
     """Test yearly update attempted in wrong month."""
@@ -467,30 +485,47 @@ def test_lambda_handler_yearly_correct_month():
 
 def test_get_monthly_ipc_rate():
     """Test getting monthly IPC rate with Definitivo status."""
-    with patch('requests.get') as mock_get:
+    with patch('requests.get') as mock_get, \
+         patch('src.lambda_function.datetime') as mock_datetime:
+        # Mock current date to be 2024-03-15
+        mock_current_date = datetime(2024, 3, 15)
+        mock_datetime.now.return_value = mock_current_date
+        
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "0.4", "Fecha": "2025-02-01T00:00:00", "T3_TipoDato": "Avance"},  # Most recent but Avance
-                {"Valor": "0.2", "Fecha": "2025-01-01T00:00:00", "T3_TipoDato": "Definitivo"},  # Should use this one
-                {"Valor": "0.5", "Fecha": "2024-12-01T00:00:00", "T3_TipoDato": "Definitivo"}  # Older
+                {"Valor": "0.4", "Fecha": "2025-02-01T00:00:00.000+01:00", "T3_TipoDato": "Avance"},  # Future date, should be skipped
+                {"Valor": "0.2", "Fecha": "2025-01-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"},  # Future date, should be skipped
+                {"Valor": "0.5", "Fecha": "2024-02-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"}  # Past date with Definitivo, should use this
             ]
         }
         
+        # Mock the strptime and strftime methods
+        mock_datetime.strptime.side_effect = lambda *args, **kw: datetime.strptime(*args, **kw)
+        mock_datetime.strftime = datetime.strftime
+        
         result = get_monthly_ipc_rate()
-        assert result["rate"] == 0.2  # Should use the most recent Definitivo value
-        assert result["date"] == "2025-01"  # Should use the date from the Definitivo value
+        assert result["rate"] == 0.5  # Should use the most recent non-future Definitivo value
+        assert result["date"] == "2024-02"  # Should use the date from the non-future Definitivo value
         assert result["mode"] == "monthly"
 
 def test_get_monthly_ipc_rate_no_definitivo():
-    """Test error when no Definitivo data is available."""
-    with patch('requests.get') as mock_get:
+    """Test error when no Definitivo data is available for non-future dates."""
+    with patch('requests.get') as mock_get, \
+         patch('src.lambda_function.datetime') as mock_datetime:
+        # Mock current date to be 2024-03-15
+        mock_current_date = datetime(2024, 3, 15)
+        mock_datetime.now.return_value = mock_current_date
+        
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "0.4", "Fecha": "2025-02-01T00:00:00", "T3_TipoDato": "Avance"},
-                {"Valor": "0.3", "Fecha": "2025-01-01T00:00:00", "T3_TipoDato": "Avance"},
-                {"Valor": "0.5", "Fecha": "2024-12-01T00:00:00", "T3_TipoDato": "Avance"}
+                {"Valor": "0.4", "Fecha": "2025-02-01T00:00:00.000+01:00", "T3_TipoDato": "Definitivo"},  # Future date with Definitivo, should be skipped
+                {"Valor": "0.3", "Fecha": "2024-02-01T00:00:00.000+01:00", "T3_TipoDato": "Avance"},  # Past date but Avance
+                {"Valor": "0.5", "Fecha": "2024-01-01T00:00:00.000+01:00", "T3_TipoDato": "Avance"}  # Past date but Avance
             ]
         }
         
-        with pytest.raises(ValueError, match="Could not find any IPC data with 'Definitivo' status"):
+        # Mock the strptime method
+        mock_datetime.strptime.side_effect = lambda *args, **kw: datetime.strptime(*args, **kw)
+        
+        with pytest.raises(ValueError, match="Could not find any IPC data with 'Definitivo' status for a non-future date"):
             get_monthly_ipc_rate()

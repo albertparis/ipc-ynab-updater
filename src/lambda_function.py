@@ -84,34 +84,33 @@ def get_monthly_ipc_rate() -> IpcData:
     }
 
 def get_yearly_ipc_rate() -> IpcData:
-    """Get the year-over-year IPC rate from INE using December values."""
-    # Get last 13 months to ensure we have last December's data
-    url = "https://servicios.ine.es/wstempus/js/ES/DATOS_SERIE/IPC251858?nult=13&tip=A"
+    """Get the year-over-year IPC rate from INE using December's value."""
+    # Get last 3 months to ensure we have December's data
+    url = "https://servicios.ine.es/wstempus/js/ES/DATOS_SERIE/IPC251858?nult=3&tip=A"
     response = requests.get(url, verify=True)
     response.raise_for_status()
     data = response.json()
     
-    # Find the most recent December data point
-    current_date = datetime.strptime(data["Data"][0]["Fecha"].split("T")[0], "%Y-%m-%d")
-    current_value = float(data["Data"][0]["Valor"])
+    if len(data["Data"]) < 3:  # We request 3 months, so we should get 3 months
+        raise ValueError("Could not get enough data points for yearly calculation")
     
-    # Find last December's value
-    last_december = None
+    # Find December data point
+    december_point = None
     for point in data["Data"]:
         date = datetime.strptime(point["Fecha"].split("T")[0], "%Y-%m-%d")
-        if date.month == 12 and date.year < current_date.year:
-            last_december = float(point["Valor"])
+        if date.month == 12:
+            december_point = (date, float(point["Valor"]))
             break
     
-    if last_december is None:
-        raise ValueError("Could not find last December's IPC value")
+    if not december_point:
+        raise ValueError("Could not find December's IPC value")
     
-    # Calculate year-over-year change
-    annual_rate = ((current_value - last_december) / last_december) * 100
+    # Use December's value which is already year-over-year rate
+    december_date, rate = december_point
     
     return {
-        "rate": annual_rate,
-        "date": current_date.strftime("%Y"),  # Only year for annual updates
+        "rate": rate,
+        "date": december_date.strftime("%Y"),  # Use December's year
         "mode": UpdateMode.YEARLY.value
     }
 

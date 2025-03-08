@@ -327,22 +327,20 @@ def test_get_update_mode_default():
         assert mode == UpdateMode.MONTHLY
 
 def test_get_yearly_ipc_rate():
-    """Test getting yearly IPC rate."""
+    """Test getting yearly IPC rate using December's value."""
     with patch('requests.get') as mock_get:
-        # Mock response with 13 months of data
+        # Mock response with December data
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "103.2", "Fecha": "2024-03-01T00:00:00"},  # Current month
-                {"Valor": "103.0", "Fecha": "2024-02-01T00:00:00"},
-                {"Valor": "102.8", "Fecha": "2024-01-01T00:00:00"},
-                {"Valor": "102.5", "Fecha": "2023-12-01T00:00:00"},  # Last December
-                {"Valor": "102.0", "Fecha": "2023-11-01T00:00:00"}
+                {"Valor": "103.2", "Fecha": "2024-01-01T00:00:00"},  # January (not used)
+                {"Valor": "3.5", "Fecha": "2023-12-01T00:00:00"},    # December (used)
+                {"Valor": "102.0", "Fecha": "2023-11-01T00:00:00"}   # November (not used)
             ]
         }
         
         result = get_yearly_ipc_rate()
-        assert result["rate"] == pytest.approx(0.6829, rel=1e-4)  # (103.2 - 102.5) / 102.5 * 100
-        assert result["date"] == "2024"
+        assert result["rate"] == 3.5  # Uses December's value directly
+        assert result["date"] == "2023"  # Uses December's year
         assert result["mode"] == "yearly"
 
 def test_get_yearly_ipc_rate_no_december():
@@ -350,12 +348,25 @@ def test_get_yearly_ipc_rate_no_december():
     with patch('requests.get') as mock_get:
         mock_get.return_value.json.return_value = {
             "Data": [
-                {"Valor": "103.2", "Fecha": "2024-03-01T00:00:00"},
-                {"Valor": "103.0", "Fecha": "2024-02-01T00:00:00"}
+                {"Valor": "103.2", "Fecha": "2024-01-01T00:00:00"},  # January
+                {"Valor": "103.0", "Fecha": "2023-11-01T00:00:00"},  # November
+                {"Valor": "102.8", "Fecha": "2023-10-01T00:00:00"}   # October
             ]
         }
         
-        with pytest.raises(ValueError, match="Could not find last December's IPC value"):
+        with pytest.raises(ValueError, match="Could not find December's IPC value"):
+            get_yearly_ipc_rate()
+
+def test_get_yearly_ipc_rate_insufficient_data():
+    """Test error when not enough data points are available."""
+    with patch('requests.get') as mock_get:
+        mock_get.return_value.json.return_value = {
+            "Data": [
+                {"Valor": "103.2", "Fecha": "2024-01-01T00:00:00"}  # Only one month
+            ]
+        }
+        
+        with pytest.raises(ValueError, match="Could not get enough data points for yearly calculation"):
             get_yearly_ipc_rate()
 
 def test_format_ipc_message_monthly():

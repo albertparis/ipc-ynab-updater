@@ -10,7 +10,7 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
 - Updates multiple YNAB category targets with the new rate
 - Maintains a history of updates in category notes
 - Sends detailed email notifications for successful updates and skips
-- Runs automatically on the 20th of each month
+- Runs automatically at 6 AM UTC on the 1st of each month
 - Secure credential management using AWS Systems Manager Parameter Store with direct fetching (no caching)
 - Comprehensive test coverage
 - CI/CD pipeline with GitHub Actions
@@ -133,7 +133,7 @@ This AWS Lambda function automatically updates multiple YNAB category targets ba
 ## Configuration
 
 The Lambda function is configured to:
-- Run at midnight (UTC) on the 20th of each month (as INE typically publishes the IPC update around the 14th)
+- Run at 6 AM UTC on the 1st of each month (as INE typically publishes the IPC update around the 14th)
 - Use 128MB of memory
 - Timeout after 30 seconds
 - Use Python 3.11 runtime

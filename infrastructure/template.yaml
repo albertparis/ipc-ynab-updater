@@ -64,8 +64,8 @@ Resources:
           Properties:
             Schedule: !If 
               - IsMonthlyMode
-              - cron(0 0 20 * ? *)  # Run at midnight on the 20th of each month
-              - cron(0 0 20 1 ? *)  # Run at midnight on January 20th
+              - cron(0 6 1 * ? *)  # Run at 6 AM UTC on the 1st of each month
+              - cron(0 6 1 1 ? *)  # Run at 6 AM UTC on January 1st
             Name: !Sub "${AWS::StackName}-${UpdateMode}-update"
             Description: !Sub "Updates YNAB target with ${UpdateMode} IPC rate"
             Enabled: true

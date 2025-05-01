@@ -456,7 +456,7 @@ def test_lambda_handler_yearly_wrong_month():
         # Mock current date as March
         mock_date = MagicMock()
         mock_date.month = 3
-        mock_date.isoformat.return_value = '2024-03-20'
+        mock_date.isoformat.return_value = '2024-03-01'
         mock_datetime.now.return_value = mock_date
 
         result = lambda_handler({}, None)
@@ -486,7 +486,7 @@ def test_lambda_handler_yearly_correct_month():
         # Mock current date as January
         mock_date = MagicMock()
         mock_date.month = 1
-        mock_date.isoformat.return_value = '2024-01-20'
+        mock_date.isoformat.return_value = '2024-01-01'
         mock_datetime.now.return_value = mock_date
 
         # Mock IPC rate and update response

@@ -1,4 +1,4 @@
-requests==2.32.3
+requests==2.32.4
 boto3==1.37.8
 pytest==8.3.5
 pytest-cov==6.0.0

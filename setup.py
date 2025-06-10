@@ -5,7 +5,7 @@ setup(
     version="0.1.0",
     packages=find_packages(include=['src', 'src.*']),
     install_requires=[
-        "requests==2.31.0",
+        "requests==2.32.4",
         "boto3==1.34.34"
     ],
 ) 
